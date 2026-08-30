@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "description": "Gemini-powered DDoS attack surface scanner & browser-based flood executor",
-  "main": "server.js",
+  "main": "index.js",
   "engines": { "node": ">=18.0.0" },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
+    "start": "node index.js",
+    "dev": "node index.js",
     "deploy": "vercel --prod"
   },
   "dependencies": {
